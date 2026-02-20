@@ -28,6 +28,6 @@ async def get_response(user_input: str, user_id: str):
 
     result = await agent_app.ainvoke(
         {"messages": [("user", user_input)]},
-        config=config
+        config=config,
     )
     return result["messages"][-1].content

@@ -22,7 +22,7 @@ async def chat(data: ChatMessage, db: Session = Depends(database.get_db)):
     ai_answer = await get_response(data.message, data.user_id)
 
     new_log = database.ChatHistory(
-        thread_id = "1",
+        thread_id = data.user_id,
         user_message = data.message,
         ai_response = ai_answer
     )
@@ -30,9 +30,13 @@ async def chat(data: ChatMessage, db: Session = Depends(database.get_db)):
     db.commit()
     db.refresh(new_log)
 
-
     return {
         "user_input": data.message,
         "ai_response": ai_answer,
         "db_id": new_log.id
     }
+
+@app.get("/history/{user_id}")
+async def get_chat_history(user_id: str, db: Session = Depends(database.get_db)):
+    history = db.query(database.ChatHistory).filter(database.ChatHistory.thread_id == user_id).order_by(database.ChatHistory.id.asc()).all()
+    return history
