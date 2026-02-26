@@ -9,5 +9,9 @@ venv/
 .venv/
 .vscode/
 sql_app.db
-.bin
-.sqlite3
+*.bin
+*.sqlite3
+temp_*
+sql_app.db
+*.db
+chroma_db/

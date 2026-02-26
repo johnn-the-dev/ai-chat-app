@@ -98,3 +98,42 @@ async def upload_file(user_id: str, file: UploadFile = File()):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+@app.get("/documents/{user_id}")
+async def list_documents(user_id: str):
+    try:
+        data = vector_storage.get(where={"user_id": user_id})
+        if not data or not data["metadatas"]:
+            return {"user_id": user_id, "documents": []}
+
+        files = set()
+        for meta in data["metadatas"]:
+            source = meta.get("source")
+            if source:
+                filename = os.path.basename(source)
+                clean_name = filename.replace(f"temp_{user_id}_", "")
+                files.add(clean_name)
+        
+        return {
+            "user_id": user_id,
+            "documents": list(files)
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error while listing files: {e}")
+    
+@app.delete("/documents/{user_id}/{filename}")
+async def delete_file(user_id: str, filename: str):
+    #for now it deletes all of the files user uploaded
+    try:
+        db_name = f"temp_{user_id}_{filename}"
+        vector_storage.delete(where={"user_id": user_id})
+        
+        return {
+            "status": "success",
+            "message": "File successfully deleted."
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error while deleting file: {e}")
+    
