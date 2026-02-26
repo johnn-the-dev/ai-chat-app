@@ -1,6 +1,7 @@
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from datetime import datetime, timezone
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
 
@@ -18,6 +19,7 @@ class ChatHistory(Base):
     thread_id = Column(String)
     user_message = Column(String)
     ai_response = Column(String)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 def get_db():
     db = SessionLocal()
