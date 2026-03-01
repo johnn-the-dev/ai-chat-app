@@ -1,12 +1,15 @@
+import os
+import database
+import shutil
+from datetime import datetime
+
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
-import database
 from sqlalchemy.orm import Session
-import os
-from datetime import datetime
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader, TextLoader
-import shutil
+
 from vector_storage import vector_storage
 from agent import get_response
 
@@ -124,15 +127,31 @@ async def list_documents(user_id: str):
     
 @app.delete("/documents/{user_id}/{filename}")
 async def delete_file(user_id: str, filename: str):
-    #for now it deletes all of the files user uploaded
     try:
         db_name = f"temp_{user_id}_{filename}"
-        vector_storage.delete(where={"user_id": user_id})
-        
-        return {
-            "status": "success",
-            "message": "File successfully deleted."
-        }
+        data = vector_storage.get(where={
+                "$and": [
+                    {"user_id": {"$eq": user_id}},
+                    {"source": {"$eq": db_name}}
+                ]
+            }
+        )
+
+        if not data or not data["ids"]:
+            return {"message": "File not in database."}
+        else:
+            vector_storage.delete(where={
+                    "$and": [
+                        {"user_id": {"$eq": user_id}},
+                        {"source": {"$eq": db_name}}
+                    ]
+                }
+            )
+            
+            return {
+                "status": "success",
+                "message": "File successfully deleted."
+            }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error while deleting file: {e}")
