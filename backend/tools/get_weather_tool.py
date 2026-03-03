@@ -1,19 +1,25 @@
 import os
 import requests
+import logging
+
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+
+log = logging.getLogger(__name__)
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 
 @tool
-def get_weather(city_name: str, measurement: str = "metric") -> str:
+def get_weather(user_id:str, city_name: str, measurement: str) -> str:
     """
     Fetch current weather for a given city.
     'city_name' should be the name of the city (e.g., 'Prague').
     'measurement' should be 'metric' (Celsius, m/s) or 'imperial' (Fahrenheit, mph).
     """
+    log.info(f"Tool CALL: 'get_weather' for User: {user_id}, city: {city_name}, measurement: {measurement}")
     if not API_KEY:
+        log.error(f"Tool ERROR: API key error.")
         return "Error: OpenWeatherMap API key not found in environment variables."
 
     url = f"https://api.openweathermap.org/data/2.5/weather?q={city_name}&appid={API_KEY}&units={measurement}"
@@ -37,7 +43,8 @@ def get_weather(city_name: str, measurement: str = "metric") -> str:
             humidity = data["main"]["humidity"]
             wind_speed = data["wind"]["speed"]
             description = data["weather"][0]["description"]
-
+            
+            log.info(f"Tool SUCCESS: found weather information for {city_name}.")
             return (
                 f"Weather in {city_name.capitalize()}: "
                 f"Temperature: {temp}{temp_unit}, "
@@ -48,9 +55,12 @@ def get_weather(city_name: str, measurement: str = "metric") -> str:
             )
 
         elif response.status_code == 404:
+            log.error(f"Tool ERROR: city: {city_name} not found.")
             return f"Error: City '{city_name}' not found."
         else:
+            log.error(f"Tool ERROR: API returned status code: {response.status_code}")
             return f"Error: API returned status code {response.status_code}."
 
     except Exception as e:
+        log.error(f"Tool ERROR: Error during connection: {str(e)}")
         return f"Error connecting to weather service: {e}"

@@ -1,4 +1,6 @@
 import os
+import logging
+
 from dotenv import load_dotenv
 from typing import Literal
 
@@ -9,6 +11,8 @@ from langgraph.prebuilt import ToolNode
 
 from vector_storage import vector_storage
 from tools import get_current_time, get_weather
+
+log = logging.getLogger(__name__)
 
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -22,6 +26,7 @@ class AgentState(MessagesState):
     user_id: str
 
 async def call_model(state: AgentState):
+    log.info(f"Agent Node: Answering User: {state.get('user_id')}")
     messages = state["messages"]
     context = state.get("context", "")
 
@@ -32,25 +37,41 @@ async def call_model(state: AgentState):
     }
 
     response = await model_with_tools.ainvoke([system_message] + messages)
+    if response.tool_calls:
+        for tool in response.tool_calls:
+            log.info(f"Agent DECISION: Calling tool '{tool['name']}' with arguments {tool['args']}")
+
     return {"messages": [response]}
 
 async def retriever_node(state: AgentState):
     user_input = state["messages"][-1].content
     user_id = state.get("user_id")
-    docs = vector_storage.similarity_search(
-        user_input,
-        k=10,
-        filter={"user_id": user_id}
-    )
-    context = "\n\n".join(d.page_content for d in docs)
-    return {"context": context}
+    log.info(f"Retriever Node: Searching the database for User: {state.get("user_id")}")
+
+    try:
+        docs = vector_storage.similarity_search(
+            user_input,
+            k=10,
+            filter={"user_id": user_id}
+        )
+        context = "\n\n".join(d.page_content for d in docs)
+        log.info(f"Retriever SUCCESS: Found {len(docs)} splits.")
+        return {"context": context}
+
+    except Exception as e:
+        log.error(f"Retriever ERROR: Error while searching the database: {str(e)}")
+        return {"context": f"Context not found: {e}"}
 
 tool_node = ToolNode(tools)
 
 def should_continue(state: AgentState) -> Literal["tools", END]:
     last_message = state["messages"][-1]
+
     if last_message.tool_calls:
+        log.info("Graph Edge: Calling Tools")
         return "tools"
+
+    log.info("Graph Edge: Answering User.")
     return END
 
 workflow = StateGraph(AgentState)
@@ -66,6 +87,7 @@ memory = MemorySaver()
 agent_app = workflow.compile(checkpointer=memory)
 
 async def get_response(user_input: str, user_id: str):
+    log.info(f"Agent START: Recieved activity from User: {user_id}")
     config = {"configurable": {"thread_id": user_id}}
 
     result = await agent_app.ainvoke(
