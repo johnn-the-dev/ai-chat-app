@@ -23,4 +23,3 @@ def get_current_time(user_id: str, timezone_str: str):
     except Exception as e:
         log.error(f"Tool Error: timezone '{timezone_str}' not found. Error: {str(e)}")
         return f"Error: Could not find timezone '{timezone_str}'. Use 'UTC' or 'America/New_York'."
-

@@ -2,6 +2,7 @@ import os
 import database
 import shutil
 import logging
+from agent import get_response
 from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
@@ -12,7 +13,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader, TextLoader
 
 from vector_storage import vector_storage
-from agent import get_response
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +27,14 @@ log = logging.getLogger(__name__)
 
 database.Base.metadata.create_all(bind=database.engine)
 app = FastAPI(title="My API Chat")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 async def read_root():
@@ -68,7 +77,6 @@ async def chat(data: ChatMessage, db: Session = Depends(database.get_db)):
         log.error(f"Chat FAILED - User: {data.user_id}, Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error.")
     
-
 @app.get("/history/{user_id}", response_model=list[ChatMessageResponse])
 async def get_chat_history(user_id: str, db: Session = Depends(database.get_db)):
     log.info(f"Chat History Fetch - User: {user_id}")
@@ -193,6 +201,3 @@ async def delete_file(user_id: str, filename: str):
     except Exception as e:
         log.error(f"Document delete ERROR - User: {user_id}, File: {filename}, Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error while deleting file: {e}")
-    
-
-    

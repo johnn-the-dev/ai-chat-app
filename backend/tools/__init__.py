@@ -1,2 +1,3 @@
 from .current_time_tool import get_current_time
 from .get_weather_tool import get_weather
+from .user_stats_tool import get_user_statistics

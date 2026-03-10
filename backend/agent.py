@@ -8,16 +8,17 @@ from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from vector_storage import vector_storage
-from tools import get_current_time, get_weather
+from tools import get_current_time, get_weather, get_user_statistics
 
 log = logging.getLogger(__name__)
 
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-tools = [get_weather, get_current_time]
+tools = [get_weather, get_current_time, get_user_statistics]
 model = ChatGroq(temperature=0.3, model="llama-3.3-70b-versatile")
 model_with_tools = model.bind_tools(tools)
 
@@ -57,7 +58,6 @@ async def retriever_node(state: AgentState):
         context = "\n\n".join(d.page_content for d in docs)
         log.info(f"Retriever SUCCESS: Found {len(docs)} splits.")
         return {"context": context}
-
     except Exception as e:
         log.error(f"Retriever ERROR: Error while searching the database: {str(e)}")
         return {"context": f"Context not found: {e}"}
@@ -83,19 +83,14 @@ workflow.add_edge("retriever", "agent")
 workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 
-memory = MemorySaver()
-agent_app = workflow.compile(checkpointer=memory)
 
 async def get_response(user_input: str, user_id: str):
     log.info(f"Agent START: Recieved activity from User: {user_id}")
     config = {"configurable": {"thread_id": user_id}}
 
-    result = await agent_app.ainvoke(
-        {
-            "messages": [("user", user_input)],
-            "user_id": user_id
-         },
-        config=config,
-    )
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as memory:
+        await memory.setup()
+        agent_app = workflow.compile(checkpointer=memory)
+        result = await agent_app.ainvoke({"messages": [("user", user_input)], "user_id": user_id}, config=config)
 
     return result["messages"][-1].content
