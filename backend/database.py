@@ -27,6 +27,12 @@ class ChatHistory(Base):
     ai_response = Column(String)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+class User(Base):
+    __tablename__ = "user"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+
 def get_db():
     db = SessionLocal()
     try:

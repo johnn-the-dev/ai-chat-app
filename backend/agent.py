@@ -34,7 +34,7 @@ async def call_model(state: AgentState):
     system_message = {
         "role": "system",
         "content": f"You're a helpful assistant. Use the following context to help answer: {context}. "
-            "If the information is not in the context, use your tools (weather or time) to find out."
+            "If the information is not in the context, use your available tools to find out."
     }
 
     response = await model_with_tools.ainvoke([system_message] + messages)

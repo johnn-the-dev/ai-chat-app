@@ -2,10 +2,16 @@ import os
 import database
 import shutil
 import logging
+import random
+import jwt
+import bcrypt
+
+from dotenv import load_dotenv
 from agent import get_response
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -36,6 +42,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+load_dotenv()
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", random.randint(1000, 2000)))
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
+    login_information_error = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=JWT_ALGORITHM)
+        username: str = payload.get("sub")
+        if username is None:
+            raise login_information_error
+    
+    except jwt.PyJWTError:
+        raise login_information_error
+    
+    user = db.query(database.User).filter(database.User.username == username).first()
+    if user is None:
+        raise login_information_error
+    return user
+
+def verify_password(plain_password, hashed_password):
+    password_byte_enc = plain_password.encode('utf-8')
+    hashed_password_bytes = hashed_password.encode('utf-8')
+
+    return bcrypt.checkpw(password_byte_enc, hashed_password_bytes)
+
+def get_password_hash(password):
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed_password.decode('utf-8')
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+@app.post("/register")
+async def register_user(user: UserCreate, db: Session = Depends(database.get_db)):
+    db_user = db.query(database.User).filter(database.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already in use.")
+
+    hashed_password = get_password_hash(user.password)
+    new_user = database.User(username=user.username, hashed_password=hashed_password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return {"message": "User successfully registered."}
+
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
+    user = db.query(database.User).filter(database.User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect username or password.")
+    
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer", "username": user.username}
+
 @app.get("/")
 async def read_root():
     return {"message": "Server online"}
@@ -53,7 +131,7 @@ class ChatMessageResponse(BaseModel):
         from_attributes = True
 
 @app.post("/chat")
-async def chat(data: ChatMessage, db: Session = Depends(database.get_db)):
+async def chat(data: ChatMessage, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
     log.info(f"Chat request - User: {data.user_id}, Message: {data.message[:50]}...")
     try:
         ai_answer = await get_response(data.message, data.user_id)
@@ -78,7 +156,7 @@ async def chat(data: ChatMessage, db: Session = Depends(database.get_db)):
         raise HTTPException(status_code=500, detail="Internal server error.")
     
 @app.get("/history/{user_id}", response_model=list[ChatMessageResponse])
-async def get_chat_history(user_id: str, db: Session = Depends(database.get_db)):
+async def get_chat_history(user_id: str, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
     log.info(f"Chat History Fetch - User: {user_id}")
     history = db.query(database.ChatHistory).filter(database.ChatHistory.thread_id == user_id).order_by(database.ChatHistory.id.asc()).all()
     if not history:
@@ -89,7 +167,7 @@ async def get_chat_history(user_id: str, db: Session = Depends(database.get_db))
     return history
 
 @app.delete("/history/{user_id}")
-async def delete_chat_history(user_id: str, db: Session = Depends(database.get_db)):
+async def delete_chat_history(user_id: str, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
     log.info(f"Chat History Delete - User: {user_id}")
     try:
         db.query(database.ChatHistory).filter(database.ChatHistory.thread_id == user_id).delete()
@@ -102,7 +180,7 @@ async def delete_chat_history(user_id: str, db: Session = Depends(database.get_d
         raise HTTPException(status_code=500, detail="Could not delete history.")
 
 @app.post("/upload/{user_id}")
-async def upload_file(user_id: str, file: UploadFile = File()):
+async def upload_file(user_id: str, file: UploadFile = File(), current_user: database.User = Depends(get_current_user)):
     log.info(f"Upload START - User: {user_id}, File: {file.filename}")
     temp_path = f"temp_{user_id}_{file.filename}"
     with open(temp_path, "wb") as tmp:
@@ -142,7 +220,7 @@ async def upload_file(user_id: str, file: UploadFile = File()):
             os.remove(temp_path)
 
 @app.get("/documents/{user_id}")
-async def list_documents(user_id: str):
+async def list_documents(user_id: str, current_user: database.User = Depends(get_current_user)):
     log.info(f"Document list request - User: {user_id}")
     try:
         data = vector_storage.get(where={"user_id": user_id})
@@ -169,7 +247,7 @@ async def list_documents(user_id: str):
         raise HTTPException(status_code=500, detail=f"Error while listing files: {str(e)}")
     
 @app.delete("/documents/{user_id}/{filename}")
-async def delete_file(user_id: str, filename: str):
+async def delete_file(user_id: str, filename: str, current_user: database.User = Depends(get_current_user)):
     log.info(f"Document delete REQUEST - User: {user_id}, File: {filename}")
     try:
         db_name = f"temp_{user_id}_{filename}"

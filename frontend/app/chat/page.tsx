@@ -8,14 +8,138 @@ export default function ChatPage() {
     const [userId, setUserId] = useState<string | null>(null);
     const [uploading, setUploading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [isRegistering, setIsRegistering] = useState(false);
+    const [authError, setAuthError] = useState('');
+
+    const [documents, setDocuments] = useState<string[]>([]);
+    const [showDocs, setShowDocs] = useState(false);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    const handleLogin = (formData: FormData) => {
-        const id = formData.get('userName') as string;
-        if (id?.trim()) setUserId(id.trim());
+    useEffect(() => {
+        if (showDocs && userId) {
+            fetchDocuments();
+        }
+    }), [showDocs, userId];
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        setUserId(null);
+        setMessages([]);
+        setUsername('');
+        setPassword('');
+    };
+
+    const fetchHistory = async (username: string, token: string) => {
+        try {
+            const response = await fetch(`http://localhost:8000/history/${username}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                const formattedMessages: {role: string, content: string}[] = [];
+
+                data.forEach((item: any) => {
+                    formattedMessages.push({ role: 'user', content: item.user_message });
+                    formattedMessages.push({ role: 'ai', content: item.ai_response });
+                });
+
+                setMessages(formattedMessages);
+            } else if (response.status === 404) {
+                setMessages([]);
+            } else {
+                console.error("Failed to load chat history.");
+            }
+        } catch (error) {
+            console.error("Error: backend error (chat history)")
+        }
+    };
+
+    const fetchDocuments = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch ('http://localhost:8000/documents/${userId}', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setDocuments(data.documents || []);
+            }
+        } catch (error) {
+            console.error("Error loading documents:", error);
+        }
+    };
+
+    const deleteDocument = async (filename: string) => {
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch ('http://localhost:8000/documents/${userId}/${filename}', {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (response.ok) {
+                setDocuments((prev) => prev.filter(doc => doc !== filename));
+            } else {
+                alert("Failed to load document.");
+            }
+        } catch (error) {
+            console.error("Error deleting document:", error);
+        }
+    };
+
+    const handleAuth = async (e: React.SyntheticEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        setAuthError('');
+
+        try {
+            if (isRegistering) {
+                const res = await fetch('http://localhost:8000/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.detail || 'Registration failed');
+                }
+                
+                alert('Successfully registered! You can now log in.');
+                setIsRegistering(false);
+                setPassword('');
+                
+            } else {
+                const formData = new URLSearchParams();
+                formData.append('username', username);
+                formData.append('password', password);
+
+                const res = await fetch('http://localhost:8000/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+                
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.detail || 'Login failed');
+                }
+                
+                const data = await res.json();
+                localStorage.setItem('token', data.access_token);
+                setUserId(data.username);
+                await fetchHistory(data.username, data.access_token);
+            }
+        } catch (err: any) {
+            setAuthError(err.message);
+        }
     };
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -24,17 +148,24 @@ export default function ChatPage() {
         setUploading(true);
         const formData = new FormData();
         formData.append('file', file);
-        
+        const token = localStorage.getItem('token');
+
         try {
             const response = await fetch('http://localhost:8000/upload/${userId}', {
                 method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
                 body: formData,
             });
             
             if (response.ok) {
                 alert("File successfully uploaded.");
+            } else if (response.status === 401){
+                alert("Session expired, please login again.");
+                handleLogout();
             } else {
-                alert("Error while uploading file.")
+                alert("Error while uploading file.");
             }
         } catch (error) {
             console.error(error);
@@ -51,51 +182,87 @@ export default function ChatPage() {
         setMessages((prev) => [...prev, userMsg]);
         const currentInput = input;
         setInput('');
+        const token = localStorage.getItem('token')
 
         try {
             const response = await fetch('http://localhost:8000/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+
+                },
                 body: JSON.stringify({ user_id: userId, message: currentInput }),
             });
 
-            if (!response.ok) throw new Error();
+            if (!response.ok) {
+                if (response.status === 401) {
+                    alert("Session expired. Please log in again.");
+                    handleLogout();
+                    throw new Error('Unauthorized');
+                }
+                throw new Error('Failed to send message');
+            }
             const data = await response.json();
             setMessages((prev) => [...prev, {role: 'ai', content: data.ai_response }]);
         } catch (error) {
-            setMessages((prev) => [...prev, { role: 'ai', content: 'Error: Backend unavailable.'}]);
+            setMessages((prev) => [...prev, { role: 'ai', content: 'Error: Backend unavailable or unauthorized.'}]);
         }
     };
 
     if (!userId) {
         return (
             <div className="flex flex-col items-center justify-center h-screen bg-[#212121] text-white p-4 font-sans">
-                <form action={handleLogin} className="flex flex-col items-center w-full max-w-sm">
+                <form onSubmit={handleAuth} className="flex flex-col items-center w-full max-w-sm">
                     <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-8 shadow-lg">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-[#212121]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                         </svg>
                     </div>
-                    <h2 className="text-3xl font-semibold mb-2 text-center">Welcome back</h2>
-                    <p className="text-gray-400 text-sm mb-8 text-center">Log in to continue your conversation</p>
+                    <h2 className="text-3xl font-semibold mb-2 text-center">
+                        {isRegistering ? 'Create Account' : 'Welcome back'}
+                    </h2>
+                    <p className="text-gray-400 text-sm mb-6 text-center">
+                        {isRegistering ? 'Register to start chatting' : 'Log in to continue your conversation'}
+                    </p>
                     
+                    {authError && (
+                        <div className="w-full bg-red-900/50 border border-red-500 text-red-200 p-3 rounded-xl mb-4 text-sm text-center">
+                            {authError}
+                        </div>
+                    )}
+
                     <input 
-                        name="userName" 
-                        className="w-full bg-transparent border border-gray-600 focus:border-white p-4 rounded-xl mb-4 text-white outline-none transition-all text-lg placeholder-gray-500"
-                        placeholder="Enter user ID..."
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="w-full bg-[#2f2f2f] border border-gray-600 focus:border-white p-4 rounded-xl mb-4 text-white outline-none transition-all text-lg placeholder-gray-500"
+                        placeholder="Username"
+                        required
+                    />
+                    <input 
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full bg-[#2f2f2f] border border-gray-600 focus:border-white p-4 rounded-xl mb-6 text-white outline-none transition-all text-lg placeholder-gray-500"
+                        placeholder="Password"
                         required
                     />
                     <button type="submit" className="w-full bg-white hover:bg-gray-200 text-[#212121] py-4 rounded-xl font-bold transition-all text-lg shadow-md active:scale-[0.98]">
-                        Continue
+                        {isRegistering ? 'Register' : 'Login'}
                     </button>
+
+                    <p className="mt-6 text-gray-400 text-sm cursor-pointer hover:text-white transition-colors" onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}>
+                        {isRegistering ? 'Already have an account? Log in' : "Don't have an account? Register"}
+                    </p>
                 </form>
             </div>
         );
     }
 
     return (
-        <div className="flex flex-col h-screen bg-[#212121] text-gray-100 font-sans selection:bg-gray-600">
-            <div className="flex justify-between items-center p-4 sticky top-0 z-10 bg-[#212121]">
+        <div className="flex flex-col h-screen bg-[#212121] text-gray-100 font-sans selection:bg-gray-600 relative">
+            <div className="flex justify-between items-center p-4 sticky top-0 z-10 bg-[#212121] border-b border-gray-800">
                 <div className="flex items-center gap-2 group cursor-pointer">
                     <div className="w-8 h-8 bg-white rounded-full flex items-center justify-center">
                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-[#212121]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -109,8 +276,19 @@ export default function ChatPage() {
                     <div className="text-sm font-medium text-gray-400 bg-[#2f2f2f] px-3 py-1.5 rounded-full">
                         {userId}
                     </div>
+                    
                     <button 
-                        onClick={() => { setUserId(null); setMessages([]); }} 
+                        onClick={() => setShowDocs(!showDocs)}
+                        className={`p-2 rounded-full transition-colors flex items-center gap-2 text-sm font-medium ${showDocs ? 'bg-blue-600/20 text-blue-400' : 'hover:bg-[#2f2f2f] text-gray-400 hover:text-white'}`}
+                        title="Your Documents"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                    </button>
+
+                    <button 
+                        onClick={handleLogout}
                         className="p-2 hover:bg-[#2f2f2f] rounded-full text-gray-400 hover:text-white transition-colors"
                         title="Logout"
                     >
@@ -120,6 +298,41 @@ export default function ChatPage() {
                     </button>
                 </div>
             </div>
+
+            {showDocs && (
+                <div className="absolute right-4 top-20 w-80 bg-[#2f2f2f] border border-gray-700 shadow-2xl rounded-2xl z-20 p-5 animate-in fade-in slide-in-from-top-4">
+                    <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                        <h3 className="text-white font-medium flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                            </svg>
+                            Vector Database
+                        </h3>
+                        <button onClick={() => setShowDocs(false)} className="text-gray-400 hover:text-white">✕</button>
+                    </div>
+                    
+                    {documents.length === 0 ? (
+                        <p className="text-gray-500 text-sm text-center py-4">No documents uploaded yet.</p>
+                    ) : (
+                        <ul className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 pr-2">
+                            {documents.map((doc, idx) => (
+                                <li key={idx} className="flex justify-between items-center bg-[#212121] p-3 rounded-xl border border-gray-700 group">
+                                    <span className="text-gray-300 text-sm truncate pr-2" title={doc}>{doc}</span>
+                                    <button 
+                                        onClick={() => deleteDocument(doc)}
+                                        className="text-gray-500 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                        title="Delete file"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
             
             <div className="flex-1 overflow-y-auto p-4 w-full scrollbar-thin scrollbar-thumb-gray-600">
                 <div className="max-w-3xl mx-auto space-y-6 pb-6">
@@ -178,7 +391,6 @@ export default function ChatPage() {
                             <input type="file" className="hidden" onChange={handleFileUpload} accept=".pdf" disabled={uploading} />
                         </label>
 
-                        {/* Textové pole */}
                         <textarea 
                             className="flex-1 max-h-48 bg-transparent border-none text-white focus:ring-0 resize-none py-3.5 px-2 outline-none placeholder-gray-500 overflow-y-auto min-h-[52px]"
                             value={input} 
