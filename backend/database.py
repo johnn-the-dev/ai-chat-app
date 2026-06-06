@@ -22,10 +22,17 @@ Base = declarative_base()
 class ChatHistory(Base):
     __tablename__ = "chat_history"
     id = Column(Integer, primary_key=True, index=True)
-    thread_id = Column(String)
+    thread_id = Column(String, index=True)
     user_message = Column(String)
     ai_response = Column(String)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class ChatSessions(Base):
+    __tablename__ = "chat_sessions"
+    id = Column(String, primary_key=True, index=True)
+    title = Column(String, default="New Chat")
+    user_id = Column(String, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class User(Base):
     __tablename__ = "user"

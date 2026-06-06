@@ -5,6 +5,7 @@ import logging
 import random
 import jwt
 import bcrypt
+import uuid
 
 from dotenv import load_dotenv
 from agent import get_response
@@ -49,6 +50,32 @@ JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", random.randint(1000, 20
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+class ChatMessage(BaseModel):
+    thread_id: str
+    message: str
+
+class ChatMessageResponse(BaseModel):
+    user_message: str
+    ai_response: str
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+class ChatSessionResponse(BaseModel):
+    id: str
+    title: str
+
+    class Config:
+        from_attributes = True
+
+class ChatRename(BaseModel):
+    title: str
+
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
     login_information_error = HTTPException(
         status_code=401,
@@ -88,10 +115,6 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt
 
-class UserCreate(BaseModel):
-    username: str
-    password: str
-
 @app.post("/register")
 async def register_user(user: UserCreate, db: Session = Depends(database.get_db)):
     db_user = db.query(database.User).filter(database.User.username == user.username).first()
@@ -118,52 +141,86 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 async def read_root():
     return {"message": "Server online"}
 
-class ChatMessage(BaseModel):
-    user_id: str
-    message: str
-
-class ChatMessageResponse(BaseModel):
-    user_message: str
-    ai_response: str
-    timestamp: datetime
-
-    class Config:
-        from_attributes = True
-
 @app.post("/chat")
 async def chat(data: ChatMessage, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
-    log.info(f"Chat request - User: {data.user_id}, Message: {data.message[:50]}...")
+    chat_session = db.query(database.ChatSessions).filter(database.ChatSessions.id == data.thread_id, database.ChatSessions.user_id == current_user.username).first()
+
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat not found or unauthorized")
+
+    if chat_session.title == "New Chat":
+        if len(data.message) > 30:
+            chat_session.title = data.message[:30] + "..."
+        else:
+            chat_session.title = data.message
+
+    log.info(f"Chat request - Thread: {data.thread_id}, Message: {data.message[:50]}...")
     try:
-        ai_answer = await get_response(data.message, data.user_id)
+        ai_answer = await get_response(data.message, current_user.username, data.thread_id)
 
         new_log = database.ChatHistory(
-            thread_id = data.user_id,
+            thread_id = data.thread_id,
             user_message = data.message,
             ai_response = ai_answer
         )
         db.add(new_log)
         db.commit()
-        db.refresh(new_log)
 
-        log.info(f"Chat SUCCESS - Thread: {data.user_id}, DB_ID: {new_log.id}")
+        log.info(f"Chat SUCCESS - Thread: {data.thread_id}, DB_ID: {new_log.id}")
         return {
             "user_input": data.message,
             "ai_response": ai_answer,
-            "db_id": new_log.id
+            "thread_id": data.thread_id,
+            "chat_title": chat_session.title
         }
     except Exception as e:
-        log.error(f"Chat FAILED - User: {data.user_id}, Error: {str(e)}")
+        log.error(f"Chat FAILED - Thread: {data.thread_id}, Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error.")
     
-@app.get("/history/{user_id}", response_model=list[ChatMessageResponse])
-async def get_chat_history(user_id: str, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
-    log.info(f"Chat History Fetch - User: {user_id}")
-    history = db.query(database.ChatHistory).filter(database.ChatHistory.thread_id == user_id).order_by(database.ChatHistory.id.asc()).all()
-    if not history:
-        log.warning(f"Chat History EMPTY - User: {user_id}")
-        raise HTTPException(status_code=404, detail="History not found.")
+@app.post("/chats", response_model=ChatSessionResponse)
+async def create_chat(db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
+    new_id = f"chat-{uuid.uuid4().hex[:8]}"
 
-    log.info(f"Chat History Fetch SUCCESS - User: {user_id}, Entries: {len(history)}")
+    new_chat = database.ChatSessions(id = new_id, user_id = current_user.username, title = "New Chat")
+    db.add(new_chat)
+    db.commit()
+    db.refresh(new_chat)
+
+    log.info(f"New Chat Session Created. Chat: {new_id}, User: {current_user.username}")
+    return new_chat
+
+@app.get("/chats", response_model=list[ChatSessionResponse])
+async def get_chats(db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
+    chats = db.query(database.ChatSessions).filter(database.ChatSessions.user_id == current_user.username).order_by(database.ChatSessions.created_at.desc()).all()
+    return chats
+
+@app.put("/chats/{thread_id}", response_model=ChatSessionResponse)
+async def rename_chat(thread_id: str, data: ChatRename, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
+    chat_session = db.query(database.ChatSessions).filter(
+        database.ChatSessions.id == thread_id,
+        database.ChatSessions.user_id == current_user.username
+    ).first()
+    
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    chat_session.title = data.title
+    db.commit()
+    db.refresh(chat_session)
+    
+    return chat_session
+
+@app.get("/history/{thread_id}", response_model=list[ChatMessageResponse])
+async def get_chat_history(thread_id: str, db: Session = Depends(database.get_db), current_user: database.User = Depends(get_current_user)):
+    log.info(f"Chat History Fetch - Thread: {thread_id}")
+    chat_session = db.query(database.ChatSessions).filter(database.ChatSessions.id == thread_id, database.ChatSessions.user_id == current_user.username).first()
+
+    if not chat_session:
+        log.warning(f"Chat History EMPTY - Thread: {thread_id}")
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    history = db.query(database.ChatHistory).filter(database.ChatHistory.thread_id == thread_id).order_by(database.ChatHistory.id.asc()).all()
+    log.info(f"Chat History Fetch SUCCESS - Thread: {thread_id}, Entries: {len(history)}")
     return history
 
 @app.delete("/history/{user_id}")
